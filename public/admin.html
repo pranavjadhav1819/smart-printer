@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shop dashboard</title>
+<style>
+:root{--ink:#14202B;--muted:#556575;--paper:#EEF2F6;--card:#fff;--line:#D2DBE4;--btn:#07768C;--on-btn:#fff;--err:#B4235A;--ok:#17744A}
+@media (prefers-color-scheme:dark){:root{--ink:#E8EEF3;--muted:#9AABBA;--paper:#0F1720;--card:#17212C;--line:#2B3A48;--btn:#38BDD6;--on-btn:#0F1720;--err:#F0709B;--ok:#4CC58C}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+.reg{display:flex;height:6px}.reg i{flex:1}
+.reg i:nth-child(1){background:#00AEEF}.reg i:nth-child(2){background:#EC008C}.reg i:nth-child(3){background:#FFF200}.reg i:nth-child(4){background:#222}
+main{max-width:900px;margin:0 auto;padding:20px 16px 56px}
+h1{font-size:1.6rem;margin:6px 0 14px}h2{font-size:1.05rem;margin:0 0 10px}
+.grid{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(260px,1fr))}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px}
+.muted{color:var(--muted);font-size:.9rem}
+.big{font-size:1.8rem;font-weight:700;font-variant-numeric:tabular-nums}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:7px;background:var(--err)}.dot.on{background:var(--ok)}
+input{font:inherit;padding:9px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--ink);width:100%}
+label{display:block;font-weight:600;margin:8px 0 4px}
+button{font:inherit;font-weight:700;padding:9px 14px;border:0;border-radius:8px;background:var(--btn);color:var(--on-btn);cursor:pointer;margin-top:10px}
+button:focus-visible,input:focus-visible{outline:3px solid var(--ink);outline-offset:2px}
+.scroll{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);white-space:nowrap}
+.bad{color:var(--err);font-weight:700}
+[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<div class="reg" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+<main>
+  <h1>Shop dashboard</h1>
+  <form class="card" id="login" style="max-width:320px">
+    <label for="pin">Owner PIN</label><input id="pin" type="password" autocomplete="current-password">
+    <button>Open dashboard</button><p class="bad" id="loginErr" hidden>Wrong PIN</p>
+  </form>
+
+  <div id="app" hidden>
+    <div class="grid">
+      <div class="card"><h2>Printer</h2><p id="online"></p><p class="muted" id="printers"></p></div>
+      <div class="card"><h2>Earned today</h2><p class="big" id="earned">₹0.00</p><p class="muted">Counts jobs that finished printing.</p></div>
+      <div class="card"><h2>Rates per page</h2>
+        <label for="bw">Black and white (₹)</label><input id="bw" type="number" min="0" step="0.5">
+        <label for="color">Colour (₹)</label><input id="color" type="number" min="0" step="0.5">
+        <button id="saveRates">Save rates</button> <span class="muted" id="saved"></span></div>
+      <div class="card"><h2>Customer QR code</h2><img id="qr" alt="QR code that opens the upload page" width="180" height="180"><p class="muted">Print this and stick it on the counter.</p></div>
+    </div>
+    <div class="card" style="margin-top:14px"><h2>Recent jobs</h2>
+      <div class="scroll"><table><thead><tr><th>Time</th><th>Order</th><th>Pages</th><th>Type</th><th>Amount</th><th>Status</th><th></th></tr></thead><tbody id="jobs"></tbody></table></div>
+    </div>
+  </div>
+</main>
+<script src="/config.js"></script>
+<script>
+const API = (window.API_BASE || '').replace(/\/$/, '');
+const $ = (id) => document.getElementById(id);
+let pin = sessionStorage.getItem('pin') || '';
+const h = () => ({ 'x-owner-pin': pin, 'Content-Type': 'application/json' });
+const rupees = (paise) => '₹' + (paise / 100).toFixed(2);
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const NEEDS_ACTION = ['print_failed', 'paid_needs_refund'];
+
+async function refresh() {
+  const r = await fetch(API + '/api/admin/summary', { headers: h() });
+  if (r.status === 401) { sessionStorage.removeItem('pin'); $('app').hidden = true; $('login').hidden = false; return false; }
+  const s = await r.json();
+  $('login').hidden = true; $('app').hidden = false;
+  $('online').innerHTML = `<span class="dot ${s.online ? 'on' : ''}"></span>${s.online ? 'Agent connected' : 'Agent offline. Start the agent on the shop PC.'}`;
+  $('printers').textContent = s.printers.length ? s.printers.join(', ') : 'No printers reported yet';
+  $('earned').textContent = rupees(s.earnedToday);
+  if (document.activeElement !== $('bw') && document.activeElement !== $('color')) { $('bw').value = s.rates.bw; $('color').value = s.rates.color; }
+  $('jobs').innerHTML = s.orders.map((o) => `<tr><td>${new Date(o.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</td><td>${esc(o.id.slice(0, 6))}</td><td>${o.pages * o.copies}</td><td>${o.mode === 'color' ? 'Colour' : 'B&amp;W'}, ${o.sides === 'double' ? '2 sided' : '1 sided'}</td><td>${rupees(o.amount)}</td>` +
+    `<td class="${NEEDS_ACTION.includes(o.status) ? 'bad' : ''}">${esc(o.status.replace(/_/g, ' '))}${o.error ? ' (' + esc(o.error) + ')' : ''}</td>` +
+    `<td>${o.status === 'print_failed' ? `<button data-id="${esc(o.id)}">Reprint</button>` : ''}</td></tr>`).join('') || '<tr><td colspan="7" class="muted">No jobs yet.</td></tr>';
+  return true;
+}
+$('login').onsubmit = async (e) => { e.preventDefault(); pin = $('pin').value; sessionStorage.setItem('pin', pin); $('loginErr').hidden = await refresh(); };
+$('saveRates').onclick = async () => {
+  const r = await fetch(API + '/api/admin/rates', { method: 'POST', headers: h(), body: JSON.stringify({ bw: $('bw').value, color: $('color').value }) });
+  $('saved').textContent = r.ok ? 'Saved' : 'Enter valid numbers';
+};
+$('jobs').onclick = async (e) => {
+  const id = e.target.dataset && e.target.dataset.id; if (!id) return;
+  await fetch(API + '/api/admin/reprint/' + id, { method: 'POST', headers: h() }); refresh();
+};
+$('qr').src = API + '/api/qr/shop1';
+if (pin) refresh();
+setInterval(() => { if (pin && !$('app').hidden) refresh(); }, 4000);
+</script>
+</body>
+</html>

@@ -1,0 +1,22 @@
+{
+  "name": "smart-print",
+  "version": "0.1.0",
+  "description": "Pay-first printing for print and xerox shops",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "agent": "node agent/agent.js",
+    "test": "node test/smoke.js"
+  },
+  "dependencies": {
+    "dotenv": "^18.0.9",
+    "express": "^5.3.0",
+    "multer": "^2.5.0",
+    "pdf-lib": "^1.17.1",
+    "pdf-to-printer": "^5.8.1",
+    "qrcode": "^1.5.4"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

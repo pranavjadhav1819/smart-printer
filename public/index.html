@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Print your files</title>
+<style>
+:root{--ink:#14202B;--muted:#556575;--paper:#EEF2F6;--card:#fff;--line:#D2DBE4;--btn:#07768C;--on-btn:#fff;--err:#B4235A;--ok:#17744A}
+@media (prefers-color-scheme:dark){:root{--ink:#E8EEF3;--muted:#9AABBA;--paper:#0F1720;--card:#17212C;--line:#2B3A48;--btn:#38BDD6;--on-btn:#0F1720;--err:#F0709B;--ok:#4CC58C}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+.reg{display:flex;height:6px}.reg i{flex:1}
+.reg i:nth-child(1){background:#00AEEF}.reg i:nth-child(2){background:#EC008C}.reg i:nth-child(3){background:#FFF200}.reg i:nth-child(4){background:#222}
+main{max-width:440px;margin:0 auto;padding:20px 16px 56px}
+h1{font-size:1.65rem;line-height:1.15;margin:6px 0 6px;letter-spacing:-.01em}
+h2{font-size:1.05rem;margin:0 0 12px}
+.muted{color:var(--muted);font-size:.9rem;margin:0}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:7px;background:var(--err)}
+.dot.on{background:var(--ok)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px;margin-top:14px}
+[hidden]{display:none!important}
+.drop{display:block;border:2px dashed var(--line);border-radius:10px;padding:22px 12px;text-align:center;font-weight:600;cursor:pointer}
+.drop:hover,.drop:focus-within{border-color:var(--btn)}
+.sr{position:absolute;opacity:0;width:1px;height:1px}
+.err{color:var(--err);font-weight:600}
+fieldset{border:0;padding:0;margin:0 0 14px}
+legend{font-weight:600;margin-bottom:6px;padding:0}
+.seg{display:grid;grid-auto-flow:column;gap:8px}
+.seg label{border:1px solid var(--line);border-radius:8px;padding:10px 6px;text-align:center;cursor:pointer}
+.seg label:has(input:checked){border-color:var(--btn);box-shadow:inset 0 0 0 1px var(--btn);font-weight:600}
+.seg label:has(input:focus-visible){outline:3px solid var(--btn);outline-offset:2px}
+input[type=number],select{width:100%;font:inherit;padding:10px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--ink)}
+.receipt{border-top:2px dashed var(--line);border-bottom:2px dashed var(--line);padding:10px 0;margin:6px 0 14px;font-variant-numeric:tabular-nums}
+.row{display:flex;justify-content:space-between;gap:12px;padding:2px 0}
+.total{font-size:1.35rem;font-weight:700;padding-top:6px}
+.btn{width:100%;font:inherit;font-weight:700;padding:14px;border:0;border-radius:8px;background:var(--btn);color:var(--on-btn);cursor:pointer}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.btn.plain{background:transparent;color:var(--ink);border:1px solid var(--line);margin-top:8px}
+.btn:focus-visible{outline:3px solid var(--ink);outline-offset:2px}
+.status{font-size:1.3rem;font-weight:700;margin:0 0 4px}
+.test{border-left:4px solid #F2C200;padding-left:12px;margin-bottom:12px}
+</style>
+</head>
+<body>
+<div class="reg" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+<main>
+  <h1 id="title">Print your files</h1>
+  <p class="muted" id="state">Checking the shop…</p>
+
+  <section class="card" id="stepMode">
+    <h2>What type of print?</h2>
+    <div class="seg"><label><input class="sr" type="radio" name="mode" value="bw" checked><span>Black and white<br><b id="rateBw"></b> per page</span></label>
+    <label><input class="sr" type="radio" name="mode" value="color"><span>Colour<br><b id="rateColor"></b> per page</span></label></div>
+  </section>
+
+  <section class="card" id="stepFiles">
+    <h2>Add your files</h2>
+    <label class="drop"><input class="sr" id="files" type="file" multiple accept=".pdf,.jpg,.jpeg,.png,.doc,.docx,.ppt,.pptx">Choose files or photos</label>
+    <p class="muted" id="upInfo" aria-live="polite">PDF, JPG, PNG, DOCX or PPTX. Files are deleted after printing.</p>
+  </section>
+
+  <section class="card" id="options" hidden>
+    <h2>Choose how to print</h2>
+    <fieldset><legend>Sides</legend>
+      <div class="seg"><label><input class="sr" type="radio" name="sides" value="single" checked><span>One side</span></label>
+      <label><input class="sr" type="radio" name="sides" value="double"><span>Both sides</span></label></div></fieldset>
+    <fieldset><legend><label for="copies">Copies</label></legend><input id="copies" type="number" min="1" max="100" value="1"></fieldset>
+    <fieldset id="printerBox" hidden><legend><label for="printer">Printer</label></legend><select id="printer"></select></fieldset>
+    <div class="receipt" id="receipt" aria-live="polite"></div>
+    <button class="btn" id="pay">Pay and print</button>
+    <p class="err" id="payErr" hidden></p>
+  </section>
+
+  <section class="card" id="mockBox" hidden>
+    <div class="test"><strong>Test mode.</strong> No real money moves. Pick a result to see how the shop reacts.</div>
+    <button class="btn" id="mockOk">Simulate successful payment</button>
+    <button class="btn plain" id="mockFail">Simulate failed payment</button>
+  </section>
+
+  <section class="card" id="failBox" hidden>
+    <p class="status err" id="failMsg"></p>
+    <p class="muted">Nothing was printed and you were not charged for this job.</p>
+    <button class="btn" id="retry" style="margin-top:12px">Try payment again</button>
+    <button class="btn plain" id="restart">Back to start</button>
+  </section>
+
+  <section class="card" id="statusBox" hidden aria-live="polite">
+    <p class="status" id="stTitle"></p>
+    <p class="muted" id="stText"></p>
+    <p class="muted" id="stRef" style="margin-top:10px"></p>
+  </section>
+</main>
+
+<script src="/config.js"></script>
+<script>
+const API = (window.API_BASE || '').replace(/\/$/, '');
+const shopId = location.pathname.split('/')[2] || 'shop1';
+const $ = (id) => document.getElementById(id);
+const rupees = (n) => '₹' + n.toFixed(2);
+const val = (name) => document.querySelector(`input[name=${name}]:checked`).value;
+let shop, uploadId, pages = 0, order = null, tracking = false;
+
+async function api(url, opts = {}) {
+  if (opts.json) { opts.method = 'POST'; opts.headers = { 'Content-Type': 'application/json' }; opts.body = JSON.stringify(opts.json); }
+  const r = await fetch(API + url, opts);
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || 'Something went wrong. Try again.');
+  return j;
+}
+
+async function loadShop() {
+  try { shop = await api('/api/shops/' + shopId); } catch (e) { $('title').textContent = 'Shop not found'; $('stepFiles').hidden = true; $('stepMode').hidden = true; return; }
+  $('title').textContent = shop.name;
+  $('rateBw').textContent = rupees(shop.rates.bw); $('rateColor').textContent = rupees(shop.rates.color);
+  $('state').innerHTML = `<span class="dot ${shop.online ? 'on' : ''}"></span>` + (shop.online ? 'Printer connected' : 'Shop is offline right now. Try again in a few minutes.');
+  const sel = $('printer'), keep = sel.value;
+  sel.replaceChildren(...shop.printers.map((p) => new Option(p, p)));
+  if (keep) sel.value = keep;
+  $('printerBox').hidden = shop.printers.length < 2;
+  update();
+}
+
+function update() {
+  if (!shop || !pages) return;
+  const mode = val('mode');
+  const copies = Math.min(Math.max(parseInt($('copies').value, 10) || 1, 1), 100);
+  const rate = shop.rates[mode], sheets = pages * copies, total = Math.max(1, sheets * rate);
+  const other = mode === 'color' ? 'bw' : 'color', otherName = mode === 'color' ? 'black and white' : 'colour';
+  $('receipt').innerHTML =
+    `<div class="row"><span>${sheets} pages, ${mode === 'color' ? 'colour' : 'black and white'}, at ${rupees(rate)}</span><span>${rupees(sheets * rate)}</span></div>` +
+    `<div class="row total"><span>Total</span><span>${rupees(total)}</span></div>` +
+    `<div class="row muted"><span>Same job in ${otherName}</span><span>${rupees(Math.max(1, sheets * shop.rates[other]))}</span></div>`;
+  $('pay').disabled = !shop.online;
+}
+document.querySelectorAll('input[name=mode], #options input').forEach((el) => el.addEventListener('input', update));
+
+$('files').onchange = async (e) => {
+  const files = [...e.target.files]; if (!files.length) return;
+  const fd = new FormData(); fd.append('shopId', shopId); files.forEach((f) => fd.append('files', f));
+  $('upInfo').className = 'muted'; $('upInfo').textContent = 'Counting pages…';
+  try {
+    const r = await api('/api/upload', { method: 'POST', body: fd });
+    uploadId = r.uploadId; pages = r.pages;
+    $('upInfo').textContent = `${files.length} file${files.length > 1 ? 's' : ''}, ${pages} page${pages > 1 ? 's' : ''} found`;
+    $('options').hidden = false; update();
+  } catch (err) { $('upInfo').className = 'err'; $('upInfo').textContent = err.message; $('options').hidden = true; }
+};
+
+$('pay').onclick = async () => {
+  $('payErr').hidden = true; $('pay').disabled = true;
+  try {
+    order = await api('/api/orders', { json: { uploadId, shopId, mode: val('mode'), sides: val('sides'), copies: $('copies').value, printer: $('printer').value } });
+    await openPayment();
+  } catch (e) { $('payErr').textContent = e.message; $('payErr').hidden = false; update(); }
+};
+
+function loadScript(src) { return new Promise((ok, no) => { const s = document.createElement('script'); s.src = src; s.onload = ok; s.onerror = () => no(new Error('Could not load the payment window')); document.head.appendChild(s); }); }
+
+async function openPayment() {
+  $('failBox').hidden = true;
+  if (order.payment === 'mock') { $('mockBox').hidden = false; return; }
+  await loadScript('https://checkout.razorpay.com/v1/checkout.js');
+  const rz = new Razorpay({
+    key: order.key, order_id: order.rzpOrderId, amount: order.amount, currency: 'INR', name: shop.name, description: `${order.pages} pages`,
+    handler: async (resp) => { try { await api(`/api/orders/${order.orderId}/verify`, { json: resp }); track(); } catch (e) { showFail(e.message); } },
+    modal: { ondismiss: () => { if (!tracking) showFail('Payment was cancelled.'); } },
+  });
+  rz.on('payment.failed', () => showFail('Payment failed.'));
+  rz.open();
+}
+
+function showFail(msg) {
+  $('mockBox').hidden = true; $('failMsg').textContent = msg; $('failBox').hidden = false;
+}
+$('retry').onclick = () => openPayment().catch((e) => showFail(e.message));
+$('restart').onclick = () => location.assign('/s/' + shopId); // failed payment: back to the start page
+
+$('mockOk').onclick = async () => { await api(`/api/orders/${order.orderId}/mock-pay`, { json: { success: true } }); track(); };
+$('mockFail').onclick = async () => { await api(`/api/orders/${order.orderId}/mock-pay`, { json: { success: false } }); showFail('Payment failed.'); };
+
+const LABEL = {
+  awaiting_payment: ['Waiting for payment', 'Finish the payment in your UPI app.'],
+  queued: ['Payment received', 'Your job is in the print queue.'],
+  printing: ['Printing now', 'Your pages are coming out of the printer.'],
+  done: ['Done', 'Collect your pages at the counter.'],
+  print_failed: ['Paid, but printing failed', 'Show this screen to the shop owner. They can reprint your job.'],
+  paid_needs_refund: ['Paid, but your file expired', 'Show this screen to the shop owner for a refund.'],
+  expired: ['Payment time ran out', 'Nothing was printed. Add your files again to start over.'],
+};
+const FINAL = ['done', 'print_failed', 'paid_needs_refund', 'expired'];
+
+function track() {
+  tracking = true;
+  ['stepMode', 'stepFiles', 'options', 'mockBox', 'failBox'].forEach((id) => ($(id).hidden = true));
+  $('statusBox').hidden = false; $('stRef').textContent = 'Order ' + order.orderId.slice(0, 6);
+  const poll = async () => {
+    try {
+      const o = await api('/api/orders/' + order.orderId);
+      const [t, d] = LABEL[o.status] || [o.status, ''];
+      $('stTitle').textContent = t; $('stText').textContent = d;
+      if (FINAL.includes(o.status)) return;
+    } catch (e) { /* keep trying */ }
+    setTimeout(poll, 2000);
+  };
+  poll();
+}
+
+loadShop(); setInterval(() => { if (!tracking) loadShop(); }, 10000);
+</script>
+</body>
+</html>
