@@ -228,38 +228,52 @@ flowchart TB
 
 ## 📸 Smart Print — UI Preview Gallery
 
-Explore the user interface concepts of Smart Print, designed to deliver a seamless digital printing experience for customers and shop owners.
+Explore the Smart Print interface, designed to simplify document printing for customers and shop owners.
 
 ### 👨‍🎓 Customer Experience
 
 <table>
-  <tr>
-    <td align="center" width="50%">
-      <b>1. Customer Homepage</b><br/>
-      <img src="screenshots/customer-home.png" width="100%" alt="Smart Print Customer Homepage"/><br/>
-      <sub>Simple and intuitive printing interface with transparent pricing.</sub>
-    </td>
-    <td align="center" width="50%">
-      <b>2. Document Upload</b><br/>
-      <img src="screenshots/document-upload.png" width="100%" alt="Smart Print Document Upload"/><br/>
-      <sub>Upload documents and view automatically detected page counts.</sub>
-    </td>
-  </tr>
-  <tr>
-    <td align="center" width="50%">
-      <b>3. Secure Payment</b><br/>
-      <img src="screenshots/payment.png" width="100%" alt="Smart Print Payment Interface"/><br/>
-      <sub>Review printing costs and proceed to payment.</sub>
-    </td>
-    <td align="center" width="50%">
-      <b>4. Shop Owner Dashboard</b><br/>
-      <img src="screenshots/admin-dashboard.png" width="100%" alt="Smart Print Admin Dashboard"/><br/>
-      <sub>Monitor orders, revenue, and printing operations.</sub>
-    </td>
-  </tr>
-</table>
+<tr>
+<td width="50%" align="center">
 
-> **Note:** These images are illustrative UI concept previews. They demonstrate the intended Smart Print experience and may differ from the currently deployed application.
+**1. Customer Homepage**
+
+<img src="./customer-home.png" width="100%" alt="Customer Homepage"/>
+
+<sub>Simple printing interface with transparent pricing.</sub>
+
+</td>
+<td width="50%" align="center">
+
+**2. Document Upload**
+
+<img src="./document-upload.png" width="100%" alt="Document Upload"/>
+
+<sub>Upload documents and view page counts.</sub>
+
+</td>
+</tr>
+<tr>
+<td width="50%" align="center">
+
+**3. Secure Payment**
+
+<img src="./payment.png" width="100%" alt="Payment Interface"/>
+
+<sub>Review printing costs and proceed to payment.</sub>
+
+</td>
+<td width="50%" align="center">
+
+**4. Shop Owner Dashboard**
+
+<img src="./admin-dashboard.png" width="100%" alt="Owner Dashboard"/>
+
+<sub>Monitor orders, revenue and printing operations.</sub>
+
+</td>
+</tr>
+</table>
 
 ---
 
