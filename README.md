@@ -226,37 +226,50 @@ flowchart TB
 
 ---
 
-## 📸 Screenshots
+## 📸 Smart Print — UI Preview Gallery
 
-Add your actual project screenshots in the `screenshots/` directory.
+Explore the user interface concepts of Smart Print, designed to deliver a seamless digital printing experience for customers and shop owners.
 
-### 1. Customer Interface
+### 👨‍🎓 Customer Experience
 
-<p align="center">
-  <img src="screenshots/customer-home.png" width="90%" alt="Smart Print Customer Homepage"/>
-</p>
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <b>1. Customer Homepage</b><br/>
+      <img src="screenshots/customer-home.png" width="100%" alt="Smart Print Customer Homepage"/><br/>
+      <sub>Simple and intuitive printing interface with transparent pricing.</sub>
+    </td>
+    <td align="center" width="50%">
+      <b>2. Document Upload</b><br/>
+      <img src="screenshots/document-upload.png" width="100%" alt="Smart Print Document Upload"/><br/>
+      <sub>Upload documents and view automatically detected page counts.</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="50%">
+      <b>3. Secure Payment</b><br/>
+      <img src="screenshots/payment.png" width="100%" alt="Smart Print Payment Interface"/><br/>
+      <sub>Review printing costs and proceed to payment.</sub>
+    </td>
+    <td align="center" width="50%">
+      <b>4. Shop Owner Dashboard</b><br/>
+      <img src="screenshots/admin-dashboard.png" width="100%" alt="Smart Print Admin Dashboard"/><br/>
+      <sub>Monitor orders, revenue, and printing operations.</sub>
+    </td>
+  </tr>
+</table>
 
-### 2. Document Upload
-
-<p align="center">
-  <img src="screenshots/document-upload.png" width="90%" alt="Document Upload Interface"/>
-</p>
-
-### 3. Payment Interface
-
-<p align="center">
-  <img src="screenshots/payment.png" width="90%" alt="Smart Print Payment Interface"/>
-</p>
-
-### 4. Shop Owner Dashboard
-
-<p align="center">
-  <img src="screenshots/admin-dashboard.png" width="90%" alt="Shop Owner Dashboard"/>
-</p>
-
-> Replace these example image paths with real screenshots from your application.
+> **Note:** These images are illustrative UI concept previews. They demonstrate the intended Smart Print experience and may differ from the currently deployed application.
 
 ---
+
+### 🚀 Experience Smart Print
+
+<p align="center">
+  <a href="https://smart-printer.onrender.com">
+    <img src="https://img.shields.io/badge/🌐_Explore_Live_Demo-00C6FF?style=for-the-badge" alt="Explore Live Demo"/>
+  </a>
+</p>
 
 ## ⚙️ Installation & Setup
 
