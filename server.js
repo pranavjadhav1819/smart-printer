@@ -15,6 +15,7 @@ const PAYMENT_MODE = process.env.PAYMENT_MODE || 'mock'; // 'mock' (demo) or 'ra
 const OWNER_PIN = process.env.OWNER_PIN || '1234';
 const AGENT_TOKEN = process.env.AGENT_TOKEN || 'change-me-agent-token';
 const { RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET, RAZORPAY_WEBHOOK_SECRET } = process.env;
+const RZP_API = process.env.RAZORPAY_API_BASE || 'https://api.razorpay.com';
 const UNPAID_EXPIRY_MS = 15 * 60 * 1000; // unpaid orders expire after 15 minutes
 const FILE_TTL_MS = 2 * 60 * 60 * 1000; // files are deleted at most 2 hours after upload
 
@@ -93,7 +94,7 @@ app.post('/api/razorpay/webhook', express.raw({ type: '*/*' }), (req, res) => {
     const pay = evt.payload.payment && evt.payload.payment.entity;
     const rzpOrderId = (pay && pay.order_id) || (evt.payload.order && evt.payload.order.entity.id);
     const order = Object.values(db.orders).find((o) => o.rzpOrderId === rzpOrderId);
-    if (order) markPaid(order, pay && pay.id);
+    if (order && pay && pay.amount === order.amount) markPaid(order, pay.id);
   }
   res.sendStatus(200);
 });
@@ -161,19 +162,22 @@ app.post('/api/orders', async (req, res) => {
         amount: Math.max(100, Math.round(up.pages * copies * shop.rates[mode] * 100)), // paise
       });
       if (PAYMENT_MODE === 'razorpay' && order.rzpAmount !== order.amount) { // new gateway order whenever the amount changes
-        const r = await fetch('https://api.razorpay.com/v1/orders', {
+        const r = await fetch(`${RZP_API}/v1/orders`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Authorization: 'Basic ' + Buffer.from(`${RAZORPAY_KEY_ID}:${RAZORPAY_KEY_SECRET}`).toString('base64') },
           body: JSON.stringify({ amount: order.amount, currency: 'INR', receipt: order.id }),
         });
-        const j = await r.json();
-        if (!r.ok) throw new Error('Payment could not be started. Try again.');
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) {
+          console.error('[razorpay] create order failed:', r.status, j.error && j.error.description);
+          throw Object.assign(new Error(r.status === 401 ? 'Payments are not set up correctly on the server. Please tell the shop owner.' : 'Payment could not be started. Try again.'), { status: r.status === 401 ? 401 : 500 });
+        }
         order.rzpOrderId = j.id; order.rzpAmount = order.amount;
       }
       db.orders[order.id] = order; save();
     }
     res.json({ orderId: order.id, pages: order.pages, amount: order.amount, payment: PAYMENT_MODE, key: RAZORPAY_KEY_ID, rzpOrderId: order.rzpOrderId });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
 });
 
 // Payment confirmed -> queue for printing. Idempotent: a duplicate confirmation can never print twice.
@@ -203,9 +207,10 @@ app.post('/api/orders/:id/mock-pay', (req, res) => {
 app.post('/api/orders/:id/verify', (req, res) => {
   const o = db.orders[req.params.id];
   if (!o || !o.rzpOrderId) return res.sendStatus(404);
-  const pid = req.body.razorpay_payment_id;
+  const { razorpay_payment_id: pid, razorpay_order_id: oid, razorpay_signature: sig } = req.body || {};
+  if (!pid || !oid || !sig) return res.status(400).json({ error: 'Missing payment details' });
   const expected = crypto.createHmac('sha256', RAZORPAY_KEY_SECRET || '').update(o.rzpOrderId + '|' + pid).digest('hex');
-  if (!safeEqual(expected, req.body.razorpay_signature)) return res.status(400).json({ error: 'Payment could not be verified' });
+  if (oid !== o.rzpOrderId || !safeEqual(expected, sig)) return res.status(400).json({ error: 'Payment could not be verified' });
   markPaid(o, pid);
   res.json({ ok: true });
 });
@@ -271,6 +276,10 @@ setInterval(() => {
 }, 60 * 1000).unref();
 
 if (require.main === module) {
+  if (PAYMENT_MODE === 'razorpay' && !(RAZORPAY_KEY_ID && RAZORPAY_KEY_SECRET)) {
+    console.error('PAYMENT_MODE=razorpay but RAZORPAY_KEY_ID or RAZORPAY_KEY_SECRET is missing. Add both to .env (or your host\'s environment variables).');
+    process.exit(1);
+  }
   app.listen(PORT, () => console.log(`Smart Print running at ${BASE_URL}  (payments: ${PAYMENT_MODE})`));
 }
 module.exports = app;
