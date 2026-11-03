@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node server.js",
     "agent": "node agent/agent.js",
-    "test": "node test/smoke.js"
+    "test": "node test/smoke.js && node test/razorpay.js"
   },
   "dependencies": {
     "dotenv": "^18.0.9",
