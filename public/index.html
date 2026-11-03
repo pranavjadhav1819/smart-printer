@@ -165,7 +165,7 @@ async function openPayment() {
     handler: async (resp) => { try { await api(`/api/orders/${order.orderId}/verify`, { json: resp }); track(); } catch (e) { showFail(e.message); } },
     modal: { ondismiss: () => { if (!tracking) showFail('Payment was cancelled.'); } },
   });
-  rz.on('payment.failed', () => showFail('Payment failed.'));
+  rz.on('payment.failed', (resp) => showFail((resp.error && resp.error.description) || 'Payment failed.'));
   rz.open();
 }
 
