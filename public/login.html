@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shop owner login</title>
+<link rel="icon" href="data:,">
+<style>
+:root{--ink:#14202B;--muted:#556575;--paper:#EEF2F6;--card:#fff;--line:#D2DBE4;--btn:#07768C;--on-btn:#fff;--err:#B4235A}
+@media (prefers-color-scheme:dark){:root{--ink:#E8EEF3;--muted:#9AABBA;--paper:#0F1720;--card:#17212C;--line:#2B3A48;--btn:#38BDD6;--on-btn:#0F1720;--err:#F0709B}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+.reg{display:flex;height:6px}.reg i{flex:1}
+.reg i:nth-child(1){background:#00AEEF}.reg i:nth-child(2){background:#EC008C}.reg i:nth-child(3){background:#FFF200}.reg i:nth-child(4){background:#222}
+main{max-width:420px;margin:0 auto;padding:28px 16px 56px}
+h1{font-size:1.6rem;line-height:1.15;margin:0 0 6px}
+.muted{color:var(--muted);font-size:.9rem;margin:0}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px;margin-top:16px}
+.seg{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:6px}
+.seg button{font:inherit;padding:10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:var(--ink);cursor:pointer}
+.seg button[aria-pressed=true]{border-color:var(--btn);box-shadow:inset 0 0 0 1px var(--btn);font-weight:700}
+label{display:block;font-weight:600;margin:12px 0 4px}
+input{width:100%;font:inherit;padding:10px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--ink)}
+button:focus-visible,input:focus-visible{outline:3px solid var(--ink);outline-offset:2px}
+.go{width:100%;font:inherit;font-weight:700;padding:13px;border:0;border-radius:8px;background:var(--btn);color:var(--on-btn);cursor:pointer;margin-top:16px}
+.go:disabled{opacity:.5;cursor:wait}
+.err{color:var(--err);font-weight:600;margin:12px 0 0}
+[hidden]{display:none!important}
+a{color:var(--btn)}
+</style>
+</head>
+<body>
+<div class="reg" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+<main>
+  <h1>Shop owner login</h1>
+  <p class="muted">Manage your rates, jobs and printer connection.</p>
+  <form class="card" id="form">
+    <div class="seg" role="group" aria-label="Choose">
+      <button type="button" id="tabLogin" aria-pressed="true">Log in</button>
+      <button type="button" id="tabSignup" aria-pressed="false">Create shop account</button>
+    </div>
+    <div id="signupOnly" hidden>
+      <label for="shopName">Shop name</label><input id="shopName" autocomplete="organization" maxlength="60">
+    </div>
+    <label for="email">Email</label><input id="email" type="email" autocomplete="email" required>
+    <label for="password">Password</label><input id="password" type="password" autocomplete="current-password" minlength="8" required>
+    <div id="signupCodeBox" hidden>
+      <label for="signupCode">Invitation code (if you were given one)</label><input id="signupCode" autocomplete="off">
+    </div>
+    <p class="muted" id="hint" hidden>Use at least 8 characters.</p>
+    <button class="go" id="go">Log in</button>
+    <p class="err" id="err" role="alert" hidden></p>
+  </form>
+  <p class="muted" style="margin-top:16px">Customer? Scan your print shop's QR code instead.</p>
+</main>
+<script src="/config.js"></script>
+<script>
+const API = (window.API_BASE || '').replace(/\/$/, '');
+const $ = (id) => document.getElementById(id);
+let signup = false;
+
+function setMode(isSignup) {
+  signup = isSignup;
+  $('tabLogin').setAttribute('aria-pressed', String(!signup)); $('tabSignup').setAttribute('aria-pressed', String(signup));
+  $('signupOnly').hidden = $('signupCodeBox').hidden = $('hint').hidden = !signup;
+  $('password').autocomplete = signup ? 'new-password' : 'current-password';
+  $('go').textContent = signup ? 'Create shop account' : 'Log in'; $('err').hidden = true;
+}
+$('tabLogin').onclick = () => setMode(false); $('tabSignup').onclick = () => setMode(true);
+
+async function post(path, body) {
+  const r = await fetch(API + path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || 'Something went wrong. Try again.');
+  return j;
+}
+
+$('form').onsubmit = async (e) => {
+  e.preventDefault(); $('err').hidden = true; $('go').disabled = true;
+  try {
+    const body = { email: $('email').value, password: $('password').value };
+    if (signup) Object.assign(body, { shopName: $('shopName').value, signupCode: $('signupCode').value });
+    const r = await post(signup ? '/api/auth/register' : '/api/auth/login', body);
+    localStorage.setItem('sp_token', r.token);
+    location.assign('/admin.html');
+  } catch (err) { $('err').textContent = err.message; $('err').hidden = false; $('go').disabled = false; }
+};
+
+// already logged in? go straight to the dashboard
+(async () => {
+  const t = localStorage.getItem('sp_token'); if (!t) return;
+  try { const r = await fetch(API + '/api/admin/summary', { headers: { Authorization: 'Bearer ' + t } }); if (r.ok) location.assign('/admin.html'); } catch (e) {}
+})();
+</script>
+</body>
+</html>
