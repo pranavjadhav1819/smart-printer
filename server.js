@@ -6,41 +6,53 @@ const { PDFDocument } = require('pdf-lib');
 const QRCode = require('qrcode');
 const crypto = require('crypto');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
+const util = require('util');
 const { execFile } = require('child_process');
+const store = require('./db');
 
 const PORT = process.env.PORT || 3000;
 const BASE_URL = process.env.BASE_URL || `http://localhost:${PORT}`;
 const PAYMENT_MODE = process.env.PAYMENT_MODE || 'mock'; // 'mock' (demo) or 'razorpay'
-const OWNER_PIN = process.env.OWNER_PIN || '1234';
-const AGENT_TOKEN = process.env.AGENT_TOKEN || 'change-me-agent-token';
+const SIGNUP_CODE = process.env.SIGNUP_CODE || ''; // if set, creating a shop account needs this invitation code
+const SESSION_MS = 14 * 24 * 60 * 60 * 1000; // owner logins last 14 days
 const { RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET, RAZORPAY_WEBHOOK_SECRET } = process.env;
 const RZP_API = process.env.RAZORPAY_API_BASE || 'https://api.razorpay.com';
 const UNPAID_EXPIRY_MS = 15 * 60 * 1000; // unpaid orders expire after 15 minutes
 const FILE_TTL_MS = 2 * 60 * 60 * 1000; // files are deleted at most 2 hours after upload
 
-// ---------- tiny JSON "database" (swap for Postgres/Supabase when you go multi-shop) ----------
-const DATA_DIR = path.join(__dirname, 'data');
-const UPLOAD_DIR = path.join(DATA_DIR, 'uploads');
-const DB_FILE = path.join(DATA_DIR, 'db.json');
-fs.mkdirSync(UPLOAD_DIR, { recursive: true });
-const db = fs.existsSync(DB_FILE)
-  ? JSON.parse(fs.readFileSync(DB_FILE, 'utf8'))
-  : { shops: { shop1: { name: 'My Print Shop', rates: { bw: 2, color: 10 } } }, uploads: {}, orders: {} };
-db.shops.shop1.agentToken = AGENT_TOKEN;
-const save = () => fs.writeFileSync(DB_FILE, JSON.stringify(db));
-const runtime = {}; // shopId -> { printers, lastSeen } reported by the shop agent
+const runtime = {}; // shopId -> { printers, lastSeen } reported by the shop agent (live status, not stored)
 const isOnline = (shopId) => runtime[shopId] && Date.now() - runtime[shopId].lastSeen < 15000;
 const newId = () => crypto.randomBytes(12).toString('hex');
-const filePath = (id) => path.join(UPLOAD_DIR, id + '.pdf');
-const deleteFile = (id) => fs.rmSync(filePath(id), { force: true });
 const safeEqual = (a, b) =>
   typeof b === 'string' && a.length === b.length && crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
+const sha256 = (text) => crypto.createHash('sha256').update(text).digest('hex');
+const bearer = (req) => (req.get('authorization') || '').replace(/^Bearer /, '');
+
+// ---------- passwords (scrypt, built into Node) and login attempt limits ----------
+const scrypt = util.promisify(crypto.scrypt);
+async function hashPassword(password) {
+  const salt = crypto.randomBytes(16);
+  return `scrypt$${salt.toString('hex')}$${(await scrypt(password, salt, 64)).toString('hex')}`;
+}
+async function checkPassword(password, stored) {
+  const [, saltHex, keyHex] = stored.split('$');
+  const key = await scrypt(password, Buffer.from(saltHex, 'hex'), 64);
+  return crypto.timingSafeEqual(key, Buffer.from(keyHex, 'hex'));
+}
+const dummyHash = hashPassword('not-a-real-password'); // used so unknown emails take as long as real ones
+const attempts = new Map(); // "login:ip" -> { n, reset }
+function rateLimited(key, max) {
+  const now = Date.now(), a = attempts.get(key);
+  if (!a || a.reset < now) { attempts.set(key, { n: 1, reset: now + 15 * 60 * 1000 }); return false; }
+  return ++a.n > max;
+}
 
 // ---------- file handling: everything becomes one PDF so pages can be counted exactly ----------
 function convertWithLibreOffice(file) {
   return new Promise((resolve, reject) => {
-    const dir = fs.mkdtempSync(path.join(DATA_DIR, 'conv-'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'conv-'));
     const ext = path.extname(file.originalname).toLowerCase();
     fs.writeFileSync(path.join(dir, 'in' + ext), file.buffer);
     execFile(process.env.SOFFICE_PATH || 'soffice',
@@ -73,48 +85,49 @@ async function toPdfBytes(file) {
 
 // ---------- app ----------
 const app = express();
+app.set('trust proxy', 1); // Render and Vercel sit behind a proxy, so req.ip is the real visitor
 
 // CORS: lets the page hosted elsewhere (for example Vercel) call this server. Set ALLOWED_ORIGIN to that page's address.
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGIN || '').split(',').map((o) => o.trim().replace(/\/$/, '')).filter(Boolean);
 app.use((req, res, next) => {
   const origin = req.get('origin');
   if (origin && ALLOWED_ORIGINS.includes(origin)) {
-    res.set({ 'Access-Control-Allow-Origin': origin, Vary: 'Origin', 'Access-Control-Allow-Headers': 'Content-Type, x-owner-pin', 'Access-Control-Allow-Methods': 'GET, POST, OPTIONS' });
+    res.set({ 'Access-Control-Allow-Origin': origin, Vary: 'Origin', 'Access-Control-Allow-Headers': 'Content-Type, Authorization', 'Access-Control-Allow-Methods': 'GET, POST, OPTIONS' });
     if (req.method === 'OPTIONS') return res.sendStatus(204);
   }
   next();
 });
 
 // Razorpay webhook must read the raw body, so it is registered before express.json()
-app.post('/api/razorpay/webhook', express.raw({ type: '*/*' }), (req, res) => {
+app.post('/api/razorpay/webhook', express.raw({ type: '*/*' }), async (req, res) => {
   const expected = crypto.createHmac('sha256', RAZORPAY_WEBHOOK_SECRET || '').update(req.body).digest('hex');
   if (!RAZORPAY_WEBHOOK_SECRET || !safeEqual(expected, req.get('x-razorpay-signature'))) return res.sendStatus(400);
   const evt = JSON.parse(req.body.toString());
   if (evt.event === 'payment.captured' || evt.event === 'order.paid') {
     const pay = evt.payload.payment && evt.payload.payment.entity;
     const rzpOrderId = (pay && pay.order_id) || (evt.payload.order && evt.payload.order.entity.id);
-    const order = Object.values(db.orders).find((o) => o.rzpOrderId === rzpOrderId);
-    if (order && pay && pay.amount === order.amount) markPaid(order, pay.id);
+    const order = rzpOrderId && (await store.findOrderByRzpId(rzpOrderId));
+    if (order && pay && pay.amount === order.amount) await store.markPaid(order.id, pay.id);
   }
   res.sendStatus(200);
 });
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
-app.get('/', (req, res) => res.redirect('/s/shop1'));
+app.get('/api/health', (req, res) => res.json({ ok: true }));
 app.get('/s/:shopId', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
 
 app.get('/api/qr/:shopId', async (req, res) => {
-  if (!db.shops[req.params.shopId]) return res.sendStatus(404);
+  if (!(await store.getShop(req.params.shopId))) return res.sendStatus(404);
   res.type('png');
   await QRCode.toFileStream(res, `${BASE_URL}/s/${req.params.shopId}`, { width: 420, margin: 2 });
 });
 
-app.get('/api/shops/:shopId', (req, res) => {
-  const shop = db.shops[req.params.shopId];
+app.get('/api/shops/:shopId', async (req, res) => {
+  const shop = await store.getShop(req.params.shopId);
   if (!shop) return res.status(404).json({ error: 'Shop not found' });
-  const rt = runtime[req.params.shopId];
-  res.json({ name: shop.name, rates: shop.rates, online: !!isOnline(req.params.shopId), printers: rt ? rt.printers : [] });
+  const rt = runtime[shop.id];
+  res.json({ name: shop.name, rates: shop.rates, online: !!isOnline(shop.id), printers: rt ? rt.printers : [] });
 });
 
 // Step 1: upload files, get the exact page count
@@ -122,7 +135,7 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 
 app.post('/api/upload', upload.array('files', 10), async (req, res) => {
   try {
     const shopId = req.body.shopId;
-    if (!db.shops[shopId]) return res.status(404).json({ error: 'Shop not found' });
+    if (!(await store.getShop(shopId))) return res.status(404).json({ error: 'Shop not found' });
     if (!req.files || !req.files.length) return res.status(400).json({ error: 'Choose at least one file' });
     const merged = await PDFDocument.create();
     for (const f of req.files) {
@@ -134,9 +147,7 @@ app.post('/api/upload', upload.array('files', 10), async (req, res) => {
     const pages = merged.getPageCount();
     if (pages > 300) throw new Error('Too many pages in one order (limit 300)');
     const uploadId = newId();
-    fs.writeFileSync(filePath(uploadId), await merged.save());
-    db.uploads[uploadId] = { shopId, pages, createdAt: Date.now() };
-    save();
+    await store.createUpload(uploadId, shopId, pages, Buffer.from(await merged.save()));
     res.json({ uploadId, pages });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
@@ -145,141 +156,194 @@ app.post('/api/upload', upload.array('files', 10), async (req, res) => {
 app.post('/api/orders', async (req, res) => {
   try {
     const { uploadId, shopId, printer } = req.body;
-    const shop = db.shops[shopId], up = db.uploads[uploadId];
-    if (!shop || !up || up.shopId !== shopId || !fs.existsSync(filePath(uploadId))) return res.status(400).json({ error: 'Upload expired. Please add your files again.' });
+    const shop = await store.getShop(shopId), up = await store.getUpload(uploadId);
+    if (!shop || !up || up.shopId !== shopId) return res.status(400).json({ error: 'Upload expired. Please add your files again.' });
     if (!isOnline(shopId)) return res.status(400).json({ error: 'This shop is offline right now. Please try again in a few minutes.' });
-    let order = db.orders[uploadId];
+    let order = await store.getOrder(uploadId);
     if (!order || order.status === 'awaiting_payment') {
       // Options (and therefore the price) may change until the customer has paid
       const mode = req.body.mode === 'color' ? 'color' : 'bw';
       const copies = Math.min(Math.max(parseInt(req.body.copies, 10) || 1, 1), 100);
       const printers = runtime[shopId].printers;
-      order = order || { id: uploadId, shopId, status: 'awaiting_payment', createdAt: Date.now() };
-      Object.assign(order, {
-        pages: up.pages, mode, copies,
+      const o = {
+        id: uploadId, shopId, pages: up.pages, mode, copies,
         sides: req.body.sides === 'double' ? 'double' : 'single',
-        printer: printers.includes(printer) ? printer : printers[0],
+        printer: printers.includes(printer) ? printer : printers[0] || null,
         amount: Math.max(100, Math.round(up.pages * copies * shop.rates[mode] * 100)), // paise
-      });
-      if (PAYMENT_MODE === 'razorpay' && order.rzpAmount !== order.amount) { // new gateway order whenever the amount changes
+        rzpOrderId: order && order.rzpOrderId, rzpAmount: order && order.rzpAmount,
+      };
+      if (PAYMENT_MODE === 'razorpay' && o.rzpAmount !== o.amount) { // new gateway order whenever the amount changes
         const r = await fetch(`${RZP_API}/v1/orders`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Authorization: 'Basic ' + Buffer.from(`${RAZORPAY_KEY_ID}:${RAZORPAY_KEY_SECRET}`).toString('base64') },
-          body: JSON.stringify({ amount: order.amount, currency: 'INR', receipt: order.id }),
+          body: JSON.stringify({ amount: o.amount, currency: 'INR', receipt: o.id }),
         });
         const j = await r.json().catch(() => ({}));
         if (!r.ok) {
           console.error('[razorpay] create order failed:', r.status, j.error && j.error.description);
           throw Object.assign(new Error(r.status === 401 ? 'Payments are not set up correctly on the server. Please tell the shop owner.' : 'Payment could not be started. Try again.'), { status: r.status === 401 ? 401 : 500 });
         }
-        order.rzpOrderId = j.id; order.rzpAmount = order.amount;
+        o.rzpOrderId = j.id; o.rzpAmount = o.amount;
       }
-      db.orders[order.id] = order; save();
+      order = await store.upsertOrder(o);
     }
     res.json({ orderId: order.id, pages: order.pages, amount: order.amount, payment: PAYMENT_MODE, key: RAZORPAY_KEY_ID, rzpOrderId: order.rzpOrderId });
   } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
 });
 
-// Payment confirmed -> queue for printing. Idempotent: a duplicate confirmation can never print twice.
-function markPaid(order, paymentId) {
-  if (!['awaiting_payment', 'expired'].includes(order.status)) return false;
-  order.status = fs.existsSync(filePath(order.id)) ? 'queued' : 'paid_needs_refund';
-  order.paymentId = paymentId; order.paidAt = Date.now(); save();
-  return true;
-}
-
-app.get('/api/orders/:id', (req, res) => {
-  const o = db.orders[req.params.id];
+app.get('/api/orders/:id', async (req, res) => {
+  const o = await store.getOrder(req.params.id);
   if (!o) return res.status(404).json({ error: 'Order not found' });
   res.json({ status: o.status, pages: o.pages, amount: o.amount, printer: o.printer });
 });
 
 // Demo payments (PAYMENT_MODE=mock only)
-app.post('/api/orders/:id/mock-pay', (req, res) => {
-  const o = db.orders[req.params.id];
+app.post('/api/orders/:id/mock-pay', async (req, res) => {
+  const o = await store.getOrder(req.params.id);
   if (PAYMENT_MODE !== 'mock' || !o) return res.sendStatus(404);
   if (!req.body.success) return res.json({ ok: false });
-  markPaid(o, 'mock_' + newId().slice(0, 8));
+  await store.markPaid(o.id, 'mock_' + newId().slice(0, 8));
   res.json({ ok: true });
 });
 
-// Razorpay Checkout success callback: verify the signature on the server
-app.post('/api/orders/:id/verify', (req, res) => {
-  const o = db.orders[req.params.id];
+// Razorpay Checkout success callback: verify the signature on the server, then queue the job (idempotent)
+app.post('/api/orders/:id/verify', async (req, res) => {
+  const o = await store.getOrder(req.params.id);
   if (!o || !o.rzpOrderId) return res.sendStatus(404);
   const { razorpay_payment_id: pid, razorpay_order_id: oid, razorpay_signature: sig } = req.body || {};
   if (!pid || !oid || !sig) return res.status(400).json({ error: 'Missing payment details' });
   const expected = crypto.createHmac('sha256', RAZORPAY_KEY_SECRET || '').update(o.rzpOrderId + '|' + pid).digest('hex');
   if (oid !== o.rzpOrderId || !safeEqual(expected, sig)) return res.status(400).json({ error: 'Payment could not be verified' });
-  markPaid(o, pid);
+  await store.markPaid(o.id, pid);
   res.json({ ok: true });
 });
 
 // ---------- shop agent API (the program running on the shop PC) ----------
-function agentAuth(req, res, next) {
+async function agentAuth(req, res, next) {
   const token = (req.get('authorization') || '').replace('Bearer ', '');
-  const shopId = Object.keys(db.shops).find((k) => db.shops[k].agentToken === token);
-  if (!token || !shopId) return res.sendStatus(401);
+  const shopId = token && (await store.shopByToken(token));
+  if (!shopId) return res.sendStatus(401);
   req.shopId = shopId; next();
 }
-app.post('/api/agent/heartbeat', agentAuth, (req, res) => {
-  runtime[req.shopId] = { printers: (req.body.printers || []).slice(0, 20).map(String), lastSeen: Date.now() };
-  const job = Object.values(db.orders).filter((o) => o.shopId === req.shopId && o.status === 'queued').sort((a, b) => a.paidAt - b.paidAt)[0];
-  if (job) { job.status = 'printing'; job.printStartedAt = Date.now(); save(); }
-  res.json({ job: job && { id: job.id, printer: job.printer, copies: job.copies, sides: job.sides, mode: job.mode } });
+app.post('/api/agent/heartbeat', agentAuth, async (req, res) => {
+  runtime[req.shopId] = { printers: ((req.body && req.body.printers) || []).slice(0, 20).map(String), lastSeen: Date.now() };
+  res.json({ job: await store.claimNextJob(req.shopId) });
 });
-app.get('/api/agent/file/:id', agentAuth, (req, res) => {
-  const o = db.orders[req.params.id];
+app.get('/api/agent/file/:id', agentAuth, async (req, res) => {
+  const o = await store.getOrder(req.params.id);
   if (!o || o.shopId !== req.shopId || o.status !== 'printing') return res.sendStatus(404);
-  res.sendFile(filePath(o.id));
+  const data = await store.getUploadData(o.id);
+  if (!data) return res.sendStatus(404);
+  res.type('application/pdf').send(data);
 });
-app.post('/api/agent/done/:id', agentAuth, (req, res) => {
-  const o = db.orders[req.params.id];
+app.post('/api/agent/done/:id', agentAuth, async (req, res) => {
+  const o = await store.getOrder(req.params.id);
   if (!o || o.shopId !== req.shopId) return res.sendStatus(404);
-  if (req.body.ok) { o.status = 'done'; o.doneAt = Date.now(); deleteFile(o.id); } // privacy: file removed right after printing
-  else { o.status = 'print_failed'; o.error = String(req.body.error || 'Unknown printer error').slice(0, 200); }
-  save(); res.sendStatus(200);
+  await store.finishOrder(o.id, !!req.body.ok, req.body.error);
+  res.sendStatus(200);
 });
 
-// ---------- owner API (protected by OWNER_PIN) ----------
-const ownerAuth = (req, res, next) => (req.get('x-owner-pin') === OWNER_PIN ? next() : res.sendStatus(401));
-app.get('/api/admin/summary', ownerAuth, (req, res) => {
-  const shopId = 'shop1', shop = db.shops[shopId];
-  const orders = Object.values(db.orders).filter((o) => o.shopId === shopId).sort((a, b) => b.createdAt - a.createdAt).slice(0, 50);
-  const today = new Date().setHours(0, 0, 0, 0);
-  const earned = orders.filter((o) => o.status === 'done' && o.paidAt >= today).reduce((s, o) => s + o.amount, 0);
-  res.json({ shopId, name: shop.name, rates: shop.rates, online: !!isOnline(shopId), printers: runtime[shopId] ? runtime[shopId].printers : [], earnedToday: earned, orders });
+// ---------- owner accounts: sign up, log in, log out ----------
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const slugify = (text) => text.toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 24) || 'shop';
+const isDuplicate = (e) => e.code === '23505' || /duplicate key|unique constraint/i.test(e.message || '');
+async function startSession(userId) {
+  const token = crypto.randomBytes(32).toString('hex'); // only its hash is stored
+  await store.createSession(sha256(token), userId, Date.now() + SESSION_MS);
+  return token;
+}
+
+app.post('/api/auth/register', async (req, res) => {
+  if (rateLimited('register:' + req.ip, 10)) return res.status(429).json({ error: 'Too many attempts. Try again in a few minutes.' });
+  const body = req.body || {};
+  const email = String(body.email || '').trim().toLowerCase(), password = String(body.password || ''), shopName = String(body.shopName || '').trim();
+  if (SIGNUP_CODE && !safeEqual(SIGNUP_CODE, body.signupCode)) return res.status(403).json({ error: 'Invalid invitation code' });
+  if (!EMAIL_RE.test(email) || email.length > 254) return res.status(400).json({ error: 'Enter a valid email address' });
+  if (password.length < 8 || password.length > 200) return res.status(400).json({ error: 'Password must be at least 8 characters' });
+  if (shopName.length < 2 || shopName.length > 60) return res.status(400).json({ error: 'Shop name must be 2 to 60 characters' });
+  const shopId = `${slugify(shopName)}-${crypto.randomBytes(2).toString('hex')}`;
+  try {
+    await store.registerOwner({ userId: newId(), email, passwordHash: await hashPassword(password), shopId, shopName, agentToken: crypto.randomBytes(24).toString('hex') });
+  } catch (e) {
+    if (isDuplicate(e)) return res.status(409).json({ error: 'An account with this email already exists. Log in instead.' });
+    throw e;
+  }
+  const user = await store.getUserByEmail(email);
+  res.status(201).json({ token: await startSession(user.id), shop: { id: shopId, name: shopName } });
 });
-app.post('/api/admin/rates', ownerAuth, (req, res) => {
+
+app.post('/api/auth/login', async (req, res) => {
+  if (rateLimited('login:' + req.ip, 20)) return res.status(429).json({ error: 'Too many attempts. Try again in a few minutes.' });
+  const body = req.body || {};
+  const user = await store.getUserByEmail(String(body.email || '').trim().toLowerCase());
+  const ok = await checkPassword(String(body.password || ''), user ? user.passwordHash : await dummyHash);
+  if (!user || !ok) return res.status(401).json({ error: 'Wrong email or password' });
+  res.json({ token: await startSession(user.id) });
+});
+
+app.post('/api/auth/logout', async (req, res) => {
+  const token = bearer(req);
+  if (token) await store.deleteSession(sha256(token));
+  res.json({ ok: true });
+});
+
+async function requireOwner(req, res, next) {
+  const token = bearer(req);
+  const user = token && (await store.sessionUser(sha256(token)));
+  if (!user) return res.sendStatus(401);
+  const shop = await store.shopForOwner(user.id);
+  if (!shop) return res.sendStatus(403);
+  req.user = user; req.shop = shop; next();
+}
+
+// ---------- owner dashboard API (everything is limited to the logged-in owner's own shop) ----------
+app.get('/api/admin/summary', requireOwner, async (req, res) => {
+  const { shop } = req;
+  res.json({
+    email: req.user.email, shopId: shop.id, name: shop.name, rates: shop.rates, agentToken: shop.agentToken,
+    customerUrl: `${BASE_URL}/s/${shop.id}`, online: !!isOnline(shop.id), printers: runtime[shop.id] ? runtime[shop.id].printers : [],
+    earnedToday: await store.earnedToday(shop.id, new Date().setHours(0, 0, 0, 0)),
+    orders: await store.listOrders(shop.id, 50),
+  });
+});
+app.post('/api/admin/rates', requireOwner, async (req, res) => {
   const bw = Number(req.body.bw), color = Number(req.body.color);
   if (!(bw >= 0) || !(color >= 0)) return res.status(400).json({ error: 'Rates must be numbers' });
-  db.shops.shop1.rates = { bw, color }; save(); res.json({ ok: true });
+  await store.setRates(req.shop.id, bw, color);
+  res.json({ ok: true });
 });
-app.post('/api/admin/reprint/:id', ownerAuth, (req, res) => {
-  const o = db.orders[req.params.id];
-  if (!o || o.status !== 'print_failed' || !fs.existsSync(filePath(o.id))) return res.status(400).json({ error: 'Cannot reprint this order' });
-  o.status = 'queued'; o.paidAt = Date.now(); save(); res.json({ ok: true });
+app.post('/api/admin/reprint/:id', requireOwner, async (req, res) => {
+  if (!(await store.reprint(req.params.id, req.shop.id))) return res.status(400).json({ error: 'Cannot reprint this order' });
+  res.json({ ok: true });
+});
+app.post('/api/admin/agent-token', requireOwner, async (req, res) => { // use if the token leaks; the old one stops working at once
+  const agentToken = crypto.randomBytes(24).toString('hex');
+  await store.setAgentToken(req.shop.id, agentToken);
+  res.json({ agentToken });
 });
 
-// ---------- housekeeping: expire unpaid orders, unstick jobs, delete old files ----------
-setInterval(() => {
-  const now = Date.now();
-  for (const o of Object.values(db.orders)) {
-    if (o.status === 'awaiting_payment' && now - o.createdAt > UNPAID_EXPIRY_MS) o.status = 'expired';
-    if (o.status === 'printing' && now - o.printStartedAt > 5 * 60 * 1000) { o.status = 'print_failed'; o.error = 'Printer did not respond'; }
-  }
-  for (const [id, u] of Object.entries(db.uploads)) {
-    const o = db.orders[id];
-    if ((o && o.status === 'done') || now - u.createdAt > FILE_TTL_MS) { deleteFile(id); delete db.uploads[id]; }
-  }
-  save();
-}, 60 * 1000).unref();
+// ---------- errors ----------
+app.use((err, req, res, next) => {
+  if (err.code === 'LIMIT_FILE_SIZE') return res.status(413).json({ error: 'A file is too large (limit 25 MB each)' });
+  if (err.code && String(err.code).startsWith('LIMIT_')) return res.status(400).json({ error: 'Too many files in one order' });
+  console.error('[error]', err);
+  res.status(500).json({ error: 'Something went wrong. Please try again.' });
+});
+
+// ---------- start ----------
+async function start() {
+  await store.init();
+  setInterval(
+    () => { for (const [k, v] of attempts) if (v.reset < Date.now()) attempts.delete(k); return store.sweep({ unpaidMs: UNPAID_EXPIRY_MS, ttlMs: FILE_TTL_MS, stuckMs: 5 * 60 * 1000 }).catch((e) => console.error('[sweep]', e.message)); },
+    60 * 1000).unref();
+  app.listen(PORT, () => console.log(`Smart Print running at ${BASE_URL}  (payments: ${PAYMENT_MODE})`));
+}
 
 if (require.main === module) {
   if (PAYMENT_MODE === 'razorpay' && !(RAZORPAY_KEY_ID && RAZORPAY_KEY_SECRET)) {
     console.error('PAYMENT_MODE=razorpay but RAZORPAY_KEY_ID or RAZORPAY_KEY_SECRET is missing. Add both to .env (or your host\'s environment variables).');
     process.exit(1);
   }
-  app.listen(PORT, () => console.log(`Smart Print running at ${BASE_URL}  (payments: ${PAYMENT_MODE})`));
+  start().catch((e) => { console.error('Could not start:', e.message); process.exit(1); });
 }
 module.exports = app;
